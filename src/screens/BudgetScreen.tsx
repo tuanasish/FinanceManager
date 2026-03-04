@@ -99,9 +99,7 @@ export const BudgetScreen = ({ navigation }: any) => {
             {/* Header */}
             <View style={styles.header}>
                 <Text style={styles.screenTitle}>Ngân Sách</Text>
-                <TouchableOpacity style={styles.notifBtn}>
-                    <Icon name="tune" color={COLORS.textMain} size={22} />
-                </TouchableOpacity>
+
             </View>
 
             <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>

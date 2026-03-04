@@ -78,9 +78,7 @@ export const DashboardScreen = ({ navigation }: any) => {
                             <Text style={styles.userName} numberOfLines={1}>{userName}</Text>
                         </View>
                     </View>
-                    <TouchableOpacity style={styles.notifBtn}>
-                        <Icon name="notifications" color={COLORS.textMain} size={22} />
-                    </TouchableOpacity>
+
                 </View>
 
                 {/* Balance Card */}

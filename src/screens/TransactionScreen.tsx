@@ -58,9 +58,7 @@ export const TransactionScreen = () => {
             <View style={styles.header}>
                 <View style={styles.headerTop}>
                     <Text style={styles.screenTitle}>Sổ Giao Dịch</Text>
-                    <TouchableOpacity style={styles.filterBtn}>
-                        <Icon name="tune" color={COLORS.primary} size={22} />
-                    </TouchableOpacity>
+
                 </View>
 
                 {/* Search */}

@@ -57,9 +57,7 @@ export const ReportScreen = () => {
             {/* Header */}
             <View style={styles.header}>
                 <Text style={styles.screenTitle}>Báo Cáo</Text>
-                <TouchableOpacity style={styles.notifBtn}>
-                    <Icon name="more-horiz" color={COLORS.textMain} size={22} />
-                </TouchableOpacity>
+
             </View>
 
             {/* Filter */}

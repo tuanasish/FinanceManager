@@ -79,6 +79,32 @@ function initDatabase(database: SQLite.SQLiteDatabase): void {
         CREATE INDEX IF NOT EXISTS idx_budgets_category ON budgets(category_id);
         CREATE INDEX IF NOT EXISTS idx_budgets_month ON budgets(month);
     `);
+
+    // Tạo categories mặc định nếu chưa có (dữ liệu cấu trúc, không phải data mẫu)
+    const catCount = database.getFirstSync<{ count: number }>('SELECT COUNT(*) as count FROM categories');
+    if (!catCount || catCount.count === 0) {
+        const defaultCategories = [
+            { name: 'Ăn uống', icon: 'food', color: '#F59E0B', type: 'expense' },
+            { name: 'Di chuyển', icon: 'car', color: '#3B82F6', type: 'expense' },
+            { name: 'Mua sắm', icon: 'shopping', color: '#EC4899', type: 'expense' },
+            { name: 'Giải trí', icon: 'film', color: '#8B5CF6', type: 'expense' },
+            { name: 'Hóa đơn', icon: 'receipt', color: '#EF4444', type: 'expense' },
+            { name: 'Sức khỏe', icon: 'hospital', color: '#14B8A6', type: 'expense' },
+            { name: 'Giáo dục', icon: 'school', color: '#F97316', type: 'expense' },
+            { name: 'Khác', icon: 'dots-horizontal', color: '#6B7280', type: 'expense' },
+            { name: 'Lương', icon: 'cash', color: '#10B981', type: 'income' },
+            { name: 'Thưởng', icon: 'gift', color: '#84CC16', type: 'income' },
+            { name: 'Đầu tư', icon: 'trending-up', color: '#0EA5E9', type: 'income' },
+            { name: 'Thu nhập khác', icon: 'wallet', color: '#A855F7', type: 'income' },
+        ];
+        for (const cat of defaultCategories) {
+            database.runSync(
+                'INSERT INTO categories (name, icon, color, type) VALUES (?, ?, ?, ?)',
+                [cat.name, cat.icon, cat.color, cat.type]
+            );
+        }
+        console.log('✅ Đã tạo categories mặc định');
+    }
 }
 
 // ===== CATEGORY QUERIES =====
@@ -114,7 +140,7 @@ export function getAllTransactions(): TransactionWithCategory[] {
         FROM transactions t
         LEFT JOIN categories c ON t.category_id = c.id
         ORDER BY t.date DESC
-    `);
+        `);
 }
 
 export function getTransactionsByMonth(month: number, year: number): TransactionWithCategory[] {
@@ -127,7 +153,7 @@ export function getTransactionsByMonth(month: number, year: number): Transaction
         LEFT JOIN categories c ON t.category_id = c.id
         WHERE t.date >= ? AND t.date <= ?
         ORDER BY t.date DESC
-    `, [startDate, endDate]);
+            `, [startDate, endDate]);
 }
 
 export function addTransaction(amount: number, type: string, categoryId: number, note: string | null, date: number): void {
@@ -144,7 +170,7 @@ export function getAllBudgets(): (BudgetRow & { category_name: string; category_
         SELECT b.*, c.name as category_name, c.icon as category_icon, c.color as category_color
         FROM budgets b
         LEFT JOIN categories c ON b.category_id = c.id
-    `);
+        `);
 }
 
 export function getBudgetsByMonth(month: string): (BudgetRow & { category_name: string; category_icon: string; category_color: string })[] {
@@ -153,7 +179,7 @@ export function getBudgetsByMonth(month: string): (BudgetRow & { category_name: 
         FROM budgets b
         LEFT JOIN categories c ON b.category_id = c.id
         WHERE b.month = ?
-    `, [month]);
+        `, [month]);
 }
 
 export function addBudget(categoryId: number, limitAmount: number, month: string): void {
@@ -188,7 +214,7 @@ export function getSpentAmountForCategory(categoryId: number, month: number, yea
         SELECT SUM(ABS(amount)) as total
         FROM transactions
         WHERE category_id = ? AND date >= ? AND date <= ? AND amount < 0
-    `, [categoryId, startDate, endDate]);
+        `, [categoryId, startDate, endDate]);
 
     return result?.total ?? 0;
 }
