@@ -1,34 +1,35 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput, FlatList } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput, FlatList, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Icon } from '../components/ui/Icon';
 import { COLORS, RADIUS, SHADOWS, FONTS, SPACING } from '../constants/theme';
-import { getAllBudgets, getTransactionsByMonth, addBudget, getCategoriesByType, CategoryRow } from '../db';
+import { getAllBudgets, getTransactionsByMonth, addBudget, updateBudget, deleteBudget, getCategoriesByType, CategoryRow, BudgetWithCategory } from '../db';
 import { useAppStore } from '../store/appStore';
 import { formatCurrency } from '../utils/format';
 
-interface BudgetWithSpent {
-    id: number;
-    category_id: number;
-    limit_amount: number;
-    month: string;
+interface BudgetWithSpent extends BudgetWithCategory {
     spent: number;
-    category_name: string;
-    category_icon: string;
-    category_color: string;
-    currency?: string;
 }
 
 export const BudgetScreen = ({ navigation }: any) => {
     const { selectedMonth, selectedYear, currency } = useAppStore();
     const [budgets, setBudgets] = useState<BudgetWithSpent[]>([]);
 
-    // Modal state
+    // Create modal state
     const [isModalVisible, setIsModalVisible] = useState(false);
     const [categories, setCategories] = useState<CategoryRow[]>([]);
     const [selectedCategory, setSelectedCategory] = useState<CategoryRow | null>(null);
+    const [budgetName, setBudgetName] = useState('');
     const [limitAmount, setLimitAmount] = useState('');
+
+    // Edit budget state
+    const [editingBudget, setEditingBudget] = useState<BudgetWithSpent | null>(null);
+    const [editName, setEditName] = useState('');
+    const [editLimitAmount, setEditLimitAmount] = useState('');
+
+    // 3-dot menu
+    const [activeMenuId, setActiveMenuId] = useState<number | null>(null);
 
     useFocusEffect(
         useCallback(() => {
@@ -40,28 +41,38 @@ export const BudgetScreen = ({ navigation }: any) => {
         const allBudgets = getAllBudgets();
         const monthTransactions = getTransactionsByMonth(selectedMonth, selectedYear);
 
-        const budgetsWithSpent = allBudgets.map(budget => {
+        const budgetsWithSpent: BudgetWithSpent[] = allBudgets.map(budget => {
+            // Tính chi tiêu: giao dịch gán budget_id hoặc cùng category_id
             const spent = monthTransactions
-                .filter(t => t.category_id === budget.category_id && t.category_type === 'expense')
+                .filter(t =>
+                    (t.budget_id === budget.id || (t.budget_id === null && t.category_id === budget.category_id))
+                    && t.category_type === 'expense'
+                )
                 .reduce((sum, t) => sum + t.amount, 0);
             return { ...budget, spent };
         });
 
-        // Add "Khác" (Others) virtual budget
+        // "Khác" virtual budget for unbudgeted expenses
         const budgetedCategoryIds = allBudgets.map(b => b.category_id);
+        const budgetIds = allBudgets.map(b => b.id);
         const otherSpent = monthTransactions
-            .filter(t => !budgetedCategoryIds.includes(t.category_id) && t.category_type === 'expense')
+            .filter(t =>
+                !budgetedCategoryIds.includes(t.category_id)
+                && (t.budget_id === null || !budgetIds.includes(t.budget_id))
+                && t.category_type === 'expense'
+            )
             .reduce((sum, t) => sum + t.amount, 0);
 
         if (otherSpent > 0 || budgetsWithSpent.length === 0) {
             budgetsWithSpent.push({
                 id: 999,
+                name: 'Khác',
                 category_id: 999,
                 category_name: 'Khác',
                 category_icon: 'more-horiz',
+                category_color: '#6B7280',
                 limit_amount: 0,
                 spent: otherSpent,
-                currency: 'VND',
                 month: `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`
             } as BudgetWithSpent);
         }
@@ -73,20 +84,45 @@ export const BudgetScreen = ({ navigation }: any) => {
         const expenseCategories = getCategoriesByType('expense');
         setCategories(expenseCategories);
         setSelectedCategory(null);
+        setBudgetName('');
         setLimitAmount('');
         setIsModalVisible(true);
     };
 
     const handleSaveBudget = () => {
-        if (!selectedCategory || !limitAmount.trim()) return;
+        if (!selectedCategory || !limitAmount.trim() || !budgetName.trim()) return;
 
         const amount = parseInt(limitAmount.replace(/[^0-9]/g, ''), 10);
         if (isNaN(amount) || amount <= 0) return;
 
         const monthStr = `${selectedYear}-${String(selectedMonth).padStart(2, '0')}`;
-        addBudget(selectedCategory.id, amount, monthStr);
+        addBudget(budgetName.trim(), selectedCategory.id, amount, monthStr);
         setIsModalVisible(false);
         loadBudgets();
+    };
+
+    const handleEditBudget = (budget: BudgetWithSpent) => {
+        if (budget.id === 999) return;
+        setEditingBudget(budget);
+        setEditName(budget.name);
+        setEditLimitAmount(budget.limit_amount.toString());
+    };
+
+    const handleSaveEditBudget = () => {
+        if (!editingBudget || !editName.trim()) return;
+        const amount = parseInt(editLimitAmount.replace(/[^0-9]/g, ''), 10);
+        if (isNaN(amount) || amount <= 0) return;
+        updateBudget(editingBudget.id, editName.trim(), amount);
+        setEditingBudget(null);
+        loadBudgets();
+    };
+
+    const handleDeleteBudget = (budget: BudgetWithSpent) => {
+        if (budget.id === 999) return;
+        Alert.alert('Xóa ngân sách', `Xóa ngân sách "${budget.name}"?`, [
+            { text: 'Hủy', style: 'cancel' },
+            { text: 'Xóa', style: 'destructive', onPress: () => { deleteBudget(budget.id); loadBudgets(); } },
+        ]);
     };
 
     const totalBudget = budgets.reduce((sum, b) => sum + b.limit_amount, 0);
@@ -99,7 +135,6 @@ export const BudgetScreen = ({ navigation }: any) => {
             {/* Header */}
             <View style={styles.header}>
                 <Text style={styles.screenTitle}>Ngân Sách</Text>
-
             </View>
 
             <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -123,7 +158,7 @@ export const BudgetScreen = ({ navigation }: any) => {
                         ]} />
                     </View>
                     <Text style={styles.overviewDesc}>
-                        {percentage >= 100 ? 'Đã vượt ngân sách!' : `Bạn đã dùng ${percentage.toFixed(0)}% ngân sách tháng này`}
+                        {percentage >= 100 ? 'Đã vượt ngân sách!' : `Bạn đã dùng ${percentage < 1 && percentage > 0 ? '< 1' : percentage.toFixed(0)}% ngân sách tháng này`}
                     </Text>
                 </View>
 
@@ -161,11 +196,29 @@ export const BudgetScreen = ({ navigation }: any) => {
                                             color={isExceeded ? COLORS.expense : isWarning ? COLORS.budgetWarning : COLORS.primary}
                                         />
                                     </View>
-                                    <TouchableOpacity>
-                                        <Icon name="more-vert" size={20} color={COLORS.textMuted} />
-                                    </TouchableOpacity>
+                                    {b.id !== 999 && (
+                                        <TouchableOpacity
+                                            onPress={() => setActiveMenuId(activeMenuId === b.id ? null : b.id)}
+                                            style={styles.budgetActionBtn}
+                                        >
+                                            <Icon name="dots-vertical" size={18} color={COLORS.textMuted} />
+                                        </TouchableOpacity>
+                                    )}
                                 </View>
-                                <Text style={styles.catName} numberOfLines={1}>{b.category_name}</Text>
+                                {activeMenuId === b.id && (
+                                    <View style={styles.popupMenu}>
+                                        <TouchableOpacity style={styles.popupItem} onPress={() => { setActiveMenuId(null); handleEditBudget(b); }}>
+                                            <Icon name="edit" size={16} color={COLORS.primary} />
+                                            <Text style={styles.popupText}>Sửa</Text>
+                                        </TouchableOpacity>
+                                        <TouchableOpacity style={styles.popupItem} onPress={() => { setActiveMenuId(null); handleDeleteBudget(b); }}>
+                                            <Icon name="delete" size={16} color={COLORS.expense} />
+                                            <Text style={[styles.popupText, { color: COLORS.expense }]}>Xóa</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                )}
+                                <Text style={styles.budgetName} numberOfLines={1}>{b.name || b.category_name}</Text>
+                                <Text style={styles.catLabel} numberOfLines={1}>{b.category_name}</Text>
                                 <Text style={styles.spentAmount}>{formatCurrency(b.spent, currency)}</Text>
                                 <Text style={styles.totalAmount}>/ {formatCurrency(b.limit_amount, currency)}</Text>
 
@@ -183,7 +236,7 @@ export const BudgetScreen = ({ navigation }: any) => {
                 </View>
             </ScrollView>
 
-            {/* Add Budget Modal */}
+            {/* Create Budget Modal */}
             <Modal
                 visible={isModalVisible}
                 transparent
@@ -199,67 +252,120 @@ export const BudgetScreen = ({ navigation }: any) => {
                             </TouchableOpacity>
                         </View>
 
-                        {/* Category selector */}
-                        <Text style={styles.inputLabel}>Chọn danh mục chi tiêu</Text>
+                        {/* Budget Name */}
+                        <Text style={styles.inputLabel}>TÊN NGÂN SÁCH</Text>
+                        <TextInput
+                            style={styles.textInputField}
+                            placeholder="VD: Xăng xe tháng 3"
+                            placeholderTextColor={COLORS.textMuted}
+                            value={budgetName}
+                            onChangeText={setBudgetName}
+                        />
+
+                        {/* Category Selection */}
+                        <Text style={styles.inputLabel}>THỂ LOẠI</Text>
                         <FlatList
-                            data={categories}
                             horizontal
-                            showsHorizontalScrollIndicator={false}
+                            data={categories}
                             keyExtractor={(item) => item.id.toString()}
-                            contentContainerStyle={styles.categoryList}
+                            showsHorizontalScrollIndicator={false}
+                            style={{ marginBottom: 16, maxHeight: 80 }}
+                            contentContainerStyle={{ gap: 10 }}
                             renderItem={({ item }) => (
                                 <TouchableOpacity
                                     style={[
-                                        styles.categoryChip,
-                                        selectedCategory?.id === item.id && styles.categoryChipActive,
+                                        styles.catChip,
+                                        selectedCategory?.id === item.id && styles.catChipActive
                                     ]}
                                     onPress={() => setSelectedCategory(item)}
                                 >
-                                    <View style={[
-                                        styles.categoryChipIcon,
-                                        selectedCategory?.id === item.id && { backgroundColor: COLORS.primarySoft + '40' },
-                                    ]}>
-                                        <Icon name={item.icon} size={18} color={selectedCategory?.id === item.id ? COLORS.primaryDark : COLORS.textMuted} />
-                                    </View>
-                                    <Text style={[
-                                        styles.categoryChipText,
-                                        selectedCategory?.id === item.id && styles.categoryChipTextActive,
-                                    ]} numberOfLines={1}>
+                                    <Icon
+                                        name={item.icon as any}
+                                        size={18}
+                                        color={selectedCategory?.id === item.id ? COLORS.white : COLORS.textMuted}
+                                    />
+                                    <Text
+                                        style={[
+                                            styles.catChipText,
+                                            selectedCategory?.id === item.id && styles.catChipTextActive
+                                        ]}
+                                    >
                                         {item.name}
                                     </Text>
                                 </TouchableOpacity>
                             )}
                         />
 
-                        {/* Amount input */}
-                        <Text style={[styles.inputLabel, { marginTop: SPACING.lg }]}>Hạn mức ({currency})</Text>
+                        {/* Limit Amount */}
+                        <Text style={styles.inputLabel}>HẠN MỨC (VNĐ)</Text>
                         <TextInput
-                            style={styles.input}
-                            value={limitAmount}
-                            onChangeText={setLimitAmount}
-                            placeholder={currency === 'VND' ? 'Ví dụ: 2000000' : 'Ví dụ: 500'}
+                            style={styles.textInputField}
+                            placeholder="500000"
                             placeholderTextColor={COLORS.textMuted}
                             keyboardType="numeric"
+                            value={limitAmount}
+                            onChangeText={setLimitAmount}
                         />
 
-                        {/* Actions */}
-                        <View style={styles.modalActions}>
+                        {/* Buttons */}
+                        <View style={styles.modalBtnRow}>
                             <TouchableOpacity
-                                style={[styles.modalBtn, styles.modalBtnCancel]}
+                                style={styles.modalBtnCancel}
                                 onPress={() => setIsModalVisible(false)}
                             >
                                 <Text style={styles.modalBtnCancelText}>Hủy</Text>
                             </TouchableOpacity>
-                            <TouchableOpacity
-                                style={[
-                                    styles.modalBtn,
-                                    styles.modalBtnSave,
-                                    (!selectedCategory || !limitAmount.trim()) && { opacity: 0.5 },
-                                ]}
-                                onPress={handleSaveBudget}
-                                disabled={!selectedCategory || !limitAmount.trim()}
-                            >
-                                <Text style={styles.modalBtnSaveText}>Tạo ngân sách</Text>
+                            <TouchableOpacity style={styles.modalBtnSave} onPress={handleSaveBudget}>
+                                <Text style={styles.modalBtnSaveText}>Tạo</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
+
+            {/* Edit Budget Modal */}
+            <Modal visible={!!editingBudget} transparent animationType="slide" onRequestClose={() => setEditingBudget(null)}>
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContent}>
+                        <View style={styles.modalHeader}>
+                            <Text style={styles.modalTitle}>Sửa ngân sách</Text>
+                            <TouchableOpacity onPress={() => setEditingBudget(null)}>
+                                <Icon name="close" size={24} color={COLORS.textMuted} />
+                            </TouchableOpacity>
+                        </View>
+
+                        {editingBudget && (
+                            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
+                                <View style={[styles.catIconWrapper, { marginRight: 12 }]}>
+                                    <Icon name={editingBudget.category_icon as any || 'cash'} size={20} color={COLORS.primary} />
+                                </View>
+                                <Text style={{ fontFamily: FONTS.heading, fontSize: 15, color: COLORS.textMuted }}>{editingBudget.category_name}</Text>
+                            </View>
+                        )}
+
+                        <Text style={styles.inputLabel}>TÊN</Text>
+                        <TextInput
+                            style={styles.textInputField}
+                            value={editName}
+                            onChangeText={setEditName}
+                            placeholder="Tên ngân sách"
+                        />
+
+                        <Text style={styles.inputLabel}>HẠN MỨC MỚI</Text>
+                        <TextInput
+                            style={styles.textInputField}
+                            keyboardType="numeric"
+                            value={editLimitAmount}
+                            onChangeText={setEditLimitAmount}
+                            placeholder="Nhập hạn mức"
+                        />
+
+                        <View style={styles.modalBtnRow}>
+                            <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setEditingBudget(null)}>
+                                <Text style={styles.modalBtnCancelText}>Hủy</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={styles.modalBtnSave} onPress={handleSaveEditBudget}>
+                                <Text style={styles.modalBtnSaveText}>Lưu</Text>
                             </TouchableOpacity>
                         </View>
                     </View>
@@ -273,60 +379,78 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: COLORS.background },
     header: {
         flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-        paddingHorizontal: SPACING.xl, paddingTop: SPACING.lg, paddingBottom: SPACING.md,
+        paddingHorizontal: SPACING.xl, paddingTop: SPACING.lg, paddingBottom: SPACING.sm,
     },
     screenTitle: { fontSize: 24, fontFamily: FONTS.heading, color: COLORS.textMain },
-    notifBtn: {
-        width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.white,
-        alignItems: 'center', justifyContent: 'center', ...SHADOWS.sm,
-    },
     scrollContent: { paddingHorizontal: SPACING.xl, paddingBottom: 120 },
+
+    // Overview
     overviewCard: {
         backgroundColor: COLORS.white, borderRadius: RADIUS.card, padding: SPACING.xxl,
-        ...SHADOWS.soft, marginBottom: SPACING.xxl, borderWidth: 1, borderColor: COLORS.border,
+        ...SHADOWS.floating, marginBottom: SPACING.xxl,
     },
-    overviewTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: SPACING.lg },
+    overviewTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: SPACING.xl },
     overviewLeft: { flex: 1 },
-    overviewLabel: { fontSize: 13, fontFamily: FONTS.bodyBold, color: COLORS.textMuted, letterSpacing: 1, marginBottom: 4 },
-    overviewAmount: { fontSize: 32, fontFamily: FONTS.numbers, fontWeight: 'bold', color: COLORS.primaryDark },
-    overviewRight: { alignItems: 'flex-end' },
-    overviewSpent: { fontSize: 13, fontFamily: FONTS.bodySemiBold, color: COLORS.textMain },
-    overviewTotal: { fontSize: 12, fontFamily: FONTS.body, color: COLORS.textMuted },
-    progressTrack: { height: 8, backgroundColor: '#F1F5F9', borderRadius: 4, overflow: 'hidden', marginBottom: SPACING.md },
-    progressFill: { height: '100%', backgroundColor: COLORS.budgetFill, borderRadius: 4 },
-    overviewDesc: { fontSize: 13, fontFamily: FONTS.bodyMedium, color: COLORS.textMuted },
-    sectionHeader: { marginBottom: SPACING.md },
-    sectionTitle: { fontSize: 18, fontFamily: FONTS.heading, color: COLORS.textMain },
-    grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, justifyContent: 'space-between' },
+    overviewRight: { alignItems: 'flex-end', marginLeft: 16 },
+    overviewLabel: { fontFamily: FONTS.body, fontSize: 13, color: COLORS.textMuted, marginBottom: 4 },
+    overviewAmount: { fontFamily: FONTS.numbers, fontSize: 32, fontWeight: 'bold', color: COLORS.primary },
+    overviewSpent: { fontFamily: FONTS.numbers, fontSize: 14, fontWeight: '600', color: COLORS.expense },
+    overviewTotal: { fontFamily: FONTS.numbers, fontSize: 13, color: COLORS.textMuted },
+    progressTrack: { height: 6, backgroundColor: '#F1F5F9', borderRadius: 3, overflow: 'hidden', marginBottom: 12 },
+    progressFill: { height: '100%', backgroundColor: COLORS.budgetFill, borderRadius: 3 },
+    overviewDesc: { fontFamily: FONTS.body, fontSize: 13, color: COLORS.textMuted, textAlign: 'center' },
+
+    // Section
+    sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.lg },
+    sectionTitle: { fontFamily: FONTS.heading, fontSize: 18, color: COLORS.textMain },
+
+    // Grid
+    grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 14 },
     addCard: {
-        width: '47%', aspectRatio: 1, backgroundColor: 'rgba(136,179,200,0.1)',
-        borderRadius: RADIUS.lg, borderWidth: 2, borderColor: 'rgba(136,179,200,0.3)', borderStyle: 'dashed',
-        alignItems: 'center', justifyContent: 'center', gap: 12,
+        width: '47%', height: 150, backgroundColor: COLORS.white, borderRadius: RADIUS.card,
+        alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: COLORS.primarySoft,
+        borderStyle: 'dashed',
     },
-    iconWrapper: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
-    addCardText: { fontSize: 14, fontFamily: FONTS.bodySemiBold, color: COLORS.primary },
+    iconWrapper: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
+    addCardText: { fontFamily: FONTS.heading, fontSize: 14, color: COLORS.primary },
     budgetCard: {
-        width: '47%', backgroundColor: COLORS.white, borderRadius: RADIUS.lg,
-        padding: SPACING.lg, ...SHADOWS.sm, borderWidth: 1, borderColor: '#F8FAFC',
+        width: '47%', backgroundColor: COLORS.white, borderRadius: RADIUS.card,
+        padding: SPACING.lg, ...SHADOWS.soft,
     },
-    budgetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
+    budgetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
     catIconWrapper: {
-        width: 40, height: 40, borderRadius: 12, backgroundColor: '#F0F7FA',
+        width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.primarySoft + '30',
         alignItems: 'center', justifyContent: 'center',
     },
-    catName: { fontSize: 14, fontFamily: FONTS.bodyBold, color: COLORS.textMain, marginBottom: 4 },
-    spentAmount: { fontSize: 16, fontFamily: FONTS.numbers, color: COLORS.textMain, fontWeight: 'bold' },
+    budgetActionBtn: {
+        width: 28, height: 28, borderRadius: 14,
+        alignItems: 'center', justifyContent: 'center',
+    },
+    popupMenu: {
+        position: 'absolute', top: 44, right: 0, zIndex: 10,
+        backgroundColor: COLORS.white, borderRadius: 12, paddingVertical: 4,
+        ...SHADOWS.floating, minWidth: 120,
+    },
+    popupItem: {
+        flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 10, gap: 8,
+    },
+    popupText: {
+        fontFamily: FONTS.bodyMedium, fontSize: 14, color: COLORS.textMain,
+    },
+    budgetName: { fontFamily: FONTS.heading, fontSize: 14, color: COLORS.textMain, marginBottom: 2 },
+    catLabel: { fontFamily: FONTS.body, fontSize: 11, color: COLORS.textMuted, marginBottom: 6 },
+    spentAmount: { fontFamily: FONTS.numbers, fontSize: 16, fontWeight: '600', color: COLORS.textMain },
     totalAmount: { fontSize: 12, fontFamily: FONTS.body, color: COLORS.textMuted },
     miniProgressTrack: { height: 4, backgroundColor: '#F1F5F9', borderRadius: 2, overflow: 'hidden' },
     miniProgressFill: { height: '100%', backgroundColor: COLORS.budgetFill, borderRadius: 2 },
 
-    // Modal styles
+    // Modal
     modalOverlay: {
         flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end',
     },
     modalContent: {
         backgroundColor: COLORS.white, borderTopLeftRadius: RADIUS.card, borderTopRightRadius: RADIUS.card,
-        padding: SPACING.xxl, paddingBottom: 40, ...SHADOWS.floating,
+        padding: SPACING.xxl, paddingBottom: 100, ...SHADOWS.floating,
     },
     modalHeader: {
         flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: SPACING.xl,
@@ -335,49 +459,26 @@ const styles = StyleSheet.create({
         fontSize: 20, fontFamily: FONTS.heading, color: COLORS.textMain,
     },
     inputLabel: {
-        fontSize: 13, fontFamily: FONTS.bodyBold, color: COLORS.textMuted, marginBottom: 10, letterSpacing: 0.5,
+        fontSize: 13, fontFamily: FONTS.bodyBold, color: COLORS.textMuted, marginBottom: 8, letterSpacing: 0.5,
     },
-    categoryList: {
-        gap: 10, paddingVertical: 4,
+    textInputField: {
+        backgroundColor: '#F8F9FA', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14,
+        fontFamily: FONTS.bodyMedium, fontSize: 16, color: COLORS.textMain, marginBottom: 16,
     },
-    categoryChip: {
-        alignItems: 'center', gap: 6, paddingVertical: 10, paddingHorizontal: 14,
-        borderRadius: RADIUS.btn, backgroundColor: '#F8FAFC', borderWidth: 1.5, borderColor: 'transparent',
-        minWidth: 72,
+    catChip: {
+        flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 10,
+        borderRadius: 9999, backgroundColor: '#F1F5F9', gap: 6,
     },
-    categoryChipActive: {
-        borderColor: COLORS.primarySoft, backgroundColor: COLORS.primarySoft + '15',
-    },
-    categoryChipIcon: {
-        width: 36, height: 36, borderRadius: 18, backgroundColor: '#F1F5F9',
-        alignItems: 'center', justifyContent: 'center',
-    },
-    categoryChipText: {
-        fontSize: 11, fontFamily: FONTS.bodySemiBold, color: COLORS.textMuted, textAlign: 'center',
-    },
-    categoryChipTextActive: {
-        color: COLORS.primaryDark,
-    },
-    input: {
-        borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS.btn, paddingHorizontal: 16, paddingVertical: 14,
-        fontSize: 18, fontFamily: FONTS.numbers, color: COLORS.textMain, backgroundColor: '#F8FAFC',
-    },
-    modalActions: {
-        flexDirection: 'row', gap: 12, marginTop: SPACING.xxl,
-    },
-    modalBtn: {
-        flex: 1, paddingVertical: 14, borderRadius: RADIUS.btn, alignItems: 'center', justifyContent: 'center',
-    },
+    catChipActive: { backgroundColor: COLORS.primary },
+    catChipText: { fontFamily: FONTS.bodySemiBold, fontSize: 13, color: COLORS.textMuted },
+    catChipTextActive: { color: COLORS.white },
+    modalBtnRow: { flexDirection: 'row', gap: 12, marginTop: 8 },
     modalBtnCancel: {
-        backgroundColor: '#F1F5F9',
+        flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: '#F1F5F9', alignItems: 'center',
     },
-    modalBtnCancelText: {
-        fontSize: 16, fontFamily: FONTS.bodyBold, color: COLORS.textMain,
-    },
+    modalBtnCancelText: { fontFamily: FONTS.bodySemiBold, color: COLORS.textMuted, fontSize: 16 },
     modalBtnSave: {
-        backgroundColor: COLORS.primary,
+        flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: COLORS.primary, alignItems: 'center',
     },
-    modalBtnSaveText: {
-        fontSize: 16, fontFamily: FONTS.bodyBold, color: COLORS.white,
-    },
+    modalBtnSaveText: { fontFamily: FONTS.bodySemiBold, color: COLORS.white, fontSize: 16 },
 });

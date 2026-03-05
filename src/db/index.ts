@@ -14,6 +14,7 @@ export interface TransactionRow {
     amount: number;
     type: string;
     category_id: number;
+    budget_id: number | null;
     note: string | null;
     date: number; // timestamp
     created_at: number;
@@ -21,6 +22,7 @@ export interface TransactionRow {
 
 export interface BudgetRow {
     id: number;
+    name: string;
     category_id: number;
     limit_amount: number;
     month: string; // 'YYYY-MM'
@@ -32,6 +34,14 @@ export interface TransactionWithCategory extends TransactionRow {
     category_icon: string;
     category_color: string;
     category_type: string;
+    budget_name: string | null;
+}
+
+// Extended budget with category info
+export interface BudgetWithCategory extends BudgetRow {
+    category_name: string;
+    category_icon: string;
+    category_color: string;
 }
 
 // Database instance (synchronous API - expo-sqlite v15+)
@@ -60,14 +70,17 @@ function initDatabase(database: SQLite.SQLiteDatabase): void {
             amount INTEGER NOT NULL,
             type TEXT NOT NULL,
             category_id INTEGER NOT NULL,
+            budget_id INTEGER,
             note TEXT,
             date INTEGER NOT NULL,
             created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
-            FOREIGN KEY (category_id) REFERENCES categories(id)
+            FOREIGN KEY (category_id) REFERENCES categories(id),
+            FOREIGN KEY (budget_id) REFERENCES budgets(id)
         );
         
         CREATE TABLE IF NOT EXISTS budgets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL DEFAULT '',
             category_id INTEGER NOT NULL,
             limit_amount INTEGER NOT NULL,
             month TEXT NOT NULL,
@@ -80,7 +93,19 @@ function initDatabase(database: SQLite.SQLiteDatabase): void {
         CREATE INDEX IF NOT EXISTS idx_budgets_month ON budgets(month);
     `);
 
-    // Tạo categories mặc định nếu chưa có (dữ liệu cấu trúc, không phải data mẫu)
+    // Migration: add columns if missing
+    try {
+        database.runSync("SELECT name FROM budgets LIMIT 1");
+    } catch {
+        try { database.execSync("ALTER TABLE budgets ADD COLUMN name TEXT NOT NULL DEFAULT ''"); } catch { }
+    }
+    try {
+        database.runSync("SELECT budget_id FROM transactions LIMIT 1");
+    } catch {
+        try { database.execSync("ALTER TABLE transactions ADD COLUMN budget_id INTEGER"); } catch { }
+    }
+
+    // Tạo categories mặc định nếu chưa có
     const catCount = database.getFirstSync<{ count: number }>('SELECT COUNT(*) as count FROM categories');
     if (!catCount || catCount.count === 0) {
         const defaultCategories = [
@@ -136,9 +161,11 @@ export function getCategoriesCount(): number {
 
 export function getAllTransactions(): TransactionWithCategory[] {
     return getDatabase().getAllSync<TransactionWithCategory>(`
-        SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color, c.type as category_type
+        SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color, c.type as category_type,
+               b.name as budget_name
         FROM transactions t
         LEFT JOIN categories c ON t.category_id = c.id
+        LEFT JOIN budgets b ON t.budget_id = b.id
         ORDER BY t.date DESC
         `);
 }
@@ -148,33 +175,46 @@ export function getTransactionsByMonth(month: number, year: number): Transaction
     const endDate = new Date(year, month, 0, 23, 59, 59, 999).getTime();
 
     return getDatabase().getAllSync<TransactionWithCategory>(`
-        SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color, c.type as category_type
+        SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color, c.type as category_type,
+               b.name as budget_name
         FROM transactions t
         LEFT JOIN categories c ON t.category_id = c.id
+        LEFT JOIN budgets b ON t.budget_id = b.id
         WHERE t.date >= ? AND t.date <= ?
         ORDER BY t.date DESC
             `, [startDate, endDate]);
 }
 
-export function addTransaction(amount: number, type: string, categoryId: number, note: string | null, date: number): void {
+export function addTransaction(amount: number, type: string, categoryId: number, note: string | null, date: number, budgetId: number | null = null): void {
     getDatabase().runSync(
-        'INSERT INTO transactions (amount, type, category_id, note, date, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        [amount, type, categoryId, note, date, Date.now()]
+        'INSERT INTO transactions (amount, type, category_id, budget_id, note, date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [amount, type, categoryId, budgetId, note, date, Date.now()]
     );
+}
+
+export function updateTransaction(id: number, amount: number, type: string, categoryId: number, note: string | null, date: number): void {
+    getDatabase().runSync(
+        'UPDATE transactions SET amount = ?, type = ?, category_id = ?, note = ?, date = ? WHERE id = ?',
+        [amount, type, categoryId, note, date, id]
+    );
+}
+
+export function deleteTransaction(id: number): void {
+    getDatabase().runSync('DELETE FROM transactions WHERE id = ?', [id]);
 }
 
 // ===== BUDGET QUERIES =====
 
-export function getAllBudgets(): (BudgetRow & { category_name: string; category_icon: string; category_color: string })[] {
-    return getDatabase().getAllSync(`
+export function getAllBudgets(): BudgetWithCategory[] {
+    return getDatabase().getAllSync<BudgetWithCategory>(`
         SELECT b.*, c.name as category_name, c.icon as category_icon, c.color as category_color
         FROM budgets b
         LEFT JOIN categories c ON b.category_id = c.id
         `);
 }
 
-export function getBudgetsByMonth(month: string): (BudgetRow & { category_name: string; category_icon: string; category_color: string })[] {
-    return getDatabase().getAllSync(`
+export function getBudgetsByMonth(month: string): BudgetWithCategory[] {
+    return getDatabase().getAllSync<BudgetWithCategory>(`
         SELECT b.*, c.name as category_name, c.icon as category_icon, c.color as category_color
         FROM budgets b
         LEFT JOIN categories c ON b.category_id = c.id
@@ -182,28 +222,32 @@ export function getBudgetsByMonth(month: string): (BudgetRow & { category_name: 
         `, [month]);
 }
 
-export function addBudget(categoryId: number, limitAmount: number, month: string): void {
-    // Check if budget already exists for this category+month
-    const existing = getDatabase().getFirstSync<BudgetRow>(
-        'SELECT * FROM budgets WHERE category_id = ? AND month = ?',
-        [categoryId, month]
+export function addBudget(name: string, categoryId: number, limitAmount: number, month: string): void {
+    getDatabase().runSync(
+        'INSERT INTO budgets (name, category_id, limit_amount, month) VALUES (?, ?, ?, ?)',
+        [name, categoryId, limitAmount, month]
     );
-    if (existing) {
-        // Update existing budget
-        getDatabase().runSync(
-            'UPDATE budgets SET limit_amount = ? WHERE id = ?',
-            [limitAmount, existing.id]
-        );
-    } else {
-        getDatabase().runSync(
-            'INSERT INTO budgets (category_id, limit_amount, month) VALUES (?, ?, ?)',
-            [categoryId, limitAmount, month]
-        );
-    }
+}
+
+export function updateBudget(id: number, name: string, limitAmount: number): void {
+    getDatabase().runSync('UPDATE budgets SET name = ?, limit_amount = ? WHERE id = ?', [name, limitAmount, id]);
 }
 
 export function deleteBudget(id: number): void {
     getDatabase().runSync('DELETE FROM budgets WHERE id = ?', [id]);
+}
+
+export function getSpentAmountForBudget(budgetId: number, month: number, year: number): number {
+    const startDate = new Date(year, month - 1, 1).getTime();
+    const endDate = new Date(year, month, 0, 23, 59, 59, 999).getTime();
+
+    const result = getDatabase().getFirstSync<{ total: number | null }>(`
+        SELECT SUM(amount) as total
+        FROM transactions
+        WHERE budget_id = ? AND date >= ? AND date <= ?
+        `, [budgetId, startDate, endDate]);
+
+    return result?.total ?? 0;
 }
 
 export function getSpentAmountForCategory(categoryId: number, month: number, year: number): number {
